@@ -37,7 +37,7 @@ app.mount("/results", StaticFiles(directory=RESULT_DIR), name="results")
 app.mount("/cropped", StaticFiles(directory=CROP_DIR), name="cropped")
 
 # OCR
-reader = easyocr.Reader(['en'], gpu=False)
+reader = easyocr.Reader(['en'], gpu=False, model_storage_directory='/tmp')
 
 
 def is_expiry(text):
