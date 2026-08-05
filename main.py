@@ -4,6 +4,10 @@ from fastapi.staticfiles import StaticFiles
 import easyocr
 import shutil
 import os
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+
 import re
 import cv2
 import uuid
