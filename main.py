@@ -138,12 +138,15 @@ async def analyze(file: UploadFile = File(...)):
     cv2.imwrite(result_path, image)
 
     return {
-        "expiry_date": expiry_date,
-        "ocr_text": texts,
-        "tampering_status": "Safe",
-        "confidence": 98,
-        "highlighted_image": f"http://127.0.0.1:8000/results/{result_file}",
-        "cropped_expiry": crop_url
-        }if __name__ == "__main__":
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+    "expiry_date": expiry_date,
+    "ocr_text": texts,
+    "tampering_status": "Safe",
+    "confidence": 98,
+    "highlighted_image": f"http://127.0.0.1:8000/results/{result_file}",
+    "cropped_expiry": crop_url
+}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
