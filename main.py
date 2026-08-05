@@ -144,4 +144,6 @@ async def analyze(file: UploadFile = File(...)):
         "confidence": 98,
         "highlighted_image": f"http://127.0.0.1:8000/results/{result_file}",
         "cropped_expiry": crop_url
-    }
+        }if __name__ == "__main__":
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
