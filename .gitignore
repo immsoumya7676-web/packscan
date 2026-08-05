@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Environment variables
+.env
+
+# Uploaded files
+uploads/
+
+# Generated results
+results/
+cropped/
+
+# Model files (if large)
+*.h5
+*.keras
+*.pkl
+
+# IDE
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
