@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File,Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import easyocr
@@ -61,7 +61,7 @@ def home():
 
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(request: Request, file: UploadFile = File(...)):
 
     # Save uploaded image
     upload_name = f"{uuid.uuid4().hex}_{file.filename}"
@@ -128,7 +128,7 @@ async def analyze(file: UploadFile = File(...)):
 
             if crop.size != 0:
                 cv2.imwrite(crop_path, crop)
-                crop_url = f"http://127.0.0.1:8000/cropped/{crop_file}"
+                crop_url = f"{str(request.base_url).rstrip('/')}/cropped/{crop_file}"
 
             break
 
@@ -137,13 +137,14 @@ async def analyze(file: UploadFile = File(...)):
     result_path = os.path.join(RESULT_DIR, result_file)
 
     cv2.imwrite(result_path, image)
+    base_url = str(request.base_url).rstrip("/")
 
     return {
     "expiry_date": expiry_date,
     "ocr_text": texts,
     "tampering_status": "Safe",
     "confidence": 98,
-    "highlighted_image": f"http://127.0.0.1:8000/results/{result_file}",
+    "highlighted_image": f"{base_url}/results/{result_file}",
     "cropped_expiry": crop_url
 }
 
