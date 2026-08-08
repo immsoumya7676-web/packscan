@@ -19,7 +19,6 @@ cropped/
 
 # Model files (if large)
 *.h5
-*.keras
 *.pkl
 
 # IDE
