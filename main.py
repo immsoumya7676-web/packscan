@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import easyocr
 import shutil
 import os
-import unicorn
+import uvicorn
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
