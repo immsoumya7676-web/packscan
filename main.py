@@ -8,14 +8,43 @@ import os
 import re
 import cv2
 import uuid
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.preprocessing import image
+
+
+# =========================================================
+# SETTINGS
+# =========================================================
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-app = FastAPI()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# =========================
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+RESULT_DIR = os.path.join(BASE_DIR, "results")
+CROP_DIR = os.path.join(BASE_DIR, "cropped")
+
+MODEL_PATH = os.path.join(BASE_DIR, "model.keras")
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
+os.makedirs(CROP_DIR, exist_ok=True)
+
+
+# =========================================================
+# FASTAPI
+# =========================================================
+
+app = FastAPI(
+    title="PackInspect AI",
+    version="1.0.0"
+)
+
+
+# =========================================================
 # CORS
-# =========================
+# =========================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,21 +54,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================
-# FOLDERS
-# =========================
 
-UPLOAD_DIR = "uploads"
-RESULT_DIR = "results"
-CROP_DIR = "cropped"
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RESULT_DIR, exist_ok=True)
-os.makedirs(CROP_DIR, exist_ok=True)
-
-# =========================
-# SERVE IMAGES
-# =========================
+# =========================================================
+# STATIC FILES
+# =========================================================
 
 app.mount(
     "/results",
@@ -53,9 +71,25 @@ app.mount(
     name="cropped"
 )
 
-# =========================
-# OCR
-# =========================
+
+# =========================================================
+# LOAD TRAINED TAMPERING MODEL
+# =========================================================
+
+print("Loading tampering detection model...")
+
+tampering_model = tf.keras.models.load_model(
+    MODEL_PATH
+)
+
+print("Tampering model loaded successfully.")
+
+
+# =========================================================
+# LOAD OCR
+# =========================================================
+
+print("Loading EasyOCR...")
 
 reader = easyocr.Reader(
     ["en"],
@@ -63,11 +97,15 @@ reader = easyocr.Reader(
     model_storage_directory="/tmp"
 )
 
-# =========================
+print("EasyOCR loaded successfully.")
+
+
+# =========================================================
 # EXPIRY DETECTION
-# =========================
+# =========================================================
 
 def is_expiry(text):
+
     text_clean = text.strip().upper()
 
     expiry_keywords = [
@@ -80,19 +118,17 @@ def is_expiry(text):
         "BBE"
     ]
 
-    # Direct expiry keywords
     for keyword in expiry_keywords:
         if keyword in text_clean:
             return True
 
-    # Date formats
     date_patterns = [
         r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
         r"\b\d{1,2}[/-]\d{4}\b",
         r"\b\d{1,2}[/-]\d{2}\b",
         r"\b\d{1,2}\s?[A-Za-z]{3,9}\s?\d{2,4}\b",
         r"\b[A-Za-z]{3,9}\s?\d{2,4}\b",
-        r"\b\d{4}[/-]\d{1,2}\b",
+        r"\b\d{4}[/-]\d{1,2}\b"
     ]
 
     for pattern in date_patterns:
@@ -102,11 +138,12 @@ def is_expiry(text):
     return False
 
 
-# =========================
+# =========================================================
 # BATCH DETECTION
-# =========================
+# =========================================================
 
 def is_batch(text):
+
     text_clean = text.strip().upper()
 
     batch_keywords = [
@@ -118,7 +155,6 @@ def is_batch(text):
         "LOT NUMBER",
         "B.NO",
         "B NO",
-        "BN",
         "MFG BATCH"
     ]
 
@@ -126,11 +162,10 @@ def is_batch(text):
         if keyword in text_clean:
             return True
 
-    # Common batch-number formats
     batch_patterns = [
         r"\bB[0-9A-Z]{3,}\b",
         r"\bLOT[ -]?[0-9A-Z]{2,}\b",
-        r"\b[A-Z]{1,4}[ -]?[0-9]{3,8}\b",
+        r"\b[A-Z]{1,4}[ -]?[0-9]{3,8}\b"
     ]
 
     for pattern in batch_patterns:
@@ -140,52 +175,133 @@ def is_batch(text):
     return False
 
 
-# =========================
-# CROP HELPER
-# =========================
+# =========================================================
+# SAVE OCR CROP
+# =========================================================
 
-def save_crop(image, bbox, crop_prefix):
-    pts = [(int(x), int(y)) for x, y in bbox]
+def save_crop(image_data, bbox, prefix):
 
-    x1 = min(p[0] for p in pts)
-    y1 = min(p[1] for p in pts)
-    x2 = max(p[0] for p in pts)
-    y2 = max(p[1] for p in pts)
+    points = [
+        (int(x), int(y))
+        for x, y in bbox
+    ]
+
+    x1 = min(p[0] for p in points)
+    y1 = min(p[1] for p in points)
+
+    x2 = max(p[0] for p in points)
+    y2 = max(p[1] for p in points)
 
     margin = 25
 
     cx1 = max(0, x1 - margin)
     cy1 = max(0, y1 - margin)
-    cx2 = min(image.shape[1], x2 + margin)
-    cy2 = min(image.shape[0], y2 + margin)
 
-    crop = image[cy1:cy2, cx1:cx2]
+    cx2 = min(
+        image_data.shape[1],
+        x2 + margin
+    )
+
+    cy2 = min(
+        image_data.shape[0],
+        y2 + margin
+    )
+
+    crop = image_data[
+        cy1:cy2,
+        cx1:cx2
+    ]
 
     if crop.size == 0:
         return None, None
 
-    crop_file = f"{crop_prefix}_{uuid.uuid4().hex}.jpg"
-    crop_path = os.path.join(CROP_DIR, crop_file)
+    filename = (
+        f"{prefix}_{uuid.uuid4().hex}.jpg"
+    )
 
-    cv2.imwrite(crop_path, crop)
+    filepath = os.path.join(
+        CROP_DIR,
+        filename
+    )
 
-    return crop_file, (x1, y1, x2, y2)
+    cv2.imwrite(
+        filepath,
+        crop
+    )
+
+    return filename, (x1, y1, x2, y2)
 
 
-# =========================
+# =========================================================
+# TAMPERING PREDICTION
+# =========================================================
+
+def predict_tampering(image_path):
+
+    IMG_SIZE = (224, 224)
+
+    # Same preprocessing used in predict.py
+    img = image.load_img(
+        image_path,
+        target_size=IMG_SIZE
+    )
+
+    img_array = image.img_to_array(img)
+
+    img_array = np.expand_dims(
+        img_array,
+        axis=0
+    )
+
+    img_array = img_array / 255.0
+
+    prediction = tampering_model.predict(
+        img_array,
+        verbose=0
+    )
+
+    # Your predict.py uses class 0
+    # as the tampered probability.
+    tampered_probability = float(
+        prediction[0][0]
+    )
+
+    if tampered_probability > 0.5:
+
+        result = "TAMPERED"
+
+        confidence = (
+            tampered_probability * 100
+        )
+
+    else:
+
+        result = "ORIGINAL"
+
+        confidence = (
+            (1 - tampered_probability) * 100
+        )
+
+    return result, round(confidence, 2)
+
+
+# =========================================================
 # HOME
-# =========================
+# =========================================================
 
 @app.get("/")
 def home():
+
     return {
-        "message": "PackInspect AI Backend Running"
+        "message": "PackInspect AI Backend Running",
+        "model": "Loaded",
+        "status": "Ready"
     }
 
 
-# =========================
+# =========================================================
 # ANALYZE
-# =========================
+# =========================================================
 
 @app.post("/analyze")
 async def analyze(
@@ -193,37 +309,68 @@ async def analyze(
     file: UploadFile = File(...)
 ):
 
-    # -------------------------
-    # Save uploaded image
-    # -------------------------
+    # -----------------------------------------------------
+    # SAVE UPLOAD
+    # -----------------------------------------------------
 
-    upload_name = f"{uuid.uuid4().hex}_{file.filename}"
+    safe_filename = (
+        file.filename
+        or "uploaded_image.jpg"
+    )
+
+    upload_name = (
+        f"{uuid.uuid4().hex}_{safe_filename}"
+    )
+
     upload_path = os.path.join(
         UPLOAD_DIR,
         upload_name
     )
 
-    with open(upload_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    with open(
+        upload_path,
+        "wb"
+    ) as buffer:
 
-    # -------------------------
-    # Read image
-    # -------------------------
+        shutil.copyfileobj(
+            file.file,
+            buffer
+        )
 
-    image = cv2.imread(upload_path)
 
-    if image is None:
+    # -----------------------------------------------------
+    # READ IMAGE
+    # -----------------------------------------------------
+
+    image_data = cv2.imread(
+        upload_path
+    )
+
+    if image_data is None:
+
         return {
             "error": "Unable to read uploaded image"
         }
 
-    # -------------------------
-    # OCR
-    # -------------------------
 
-    result = reader.readtext(upload_path)
+    # =====================================================
+    # 1. ACTUAL TRAINED MODEL PREDICTION
+    # =====================================================
 
-    texts = []
+    tampering_status, confidence = (
+        predict_tampering(upload_path)
+    )
+
+
+    # =====================================================
+    # 2. OCR
+    # =====================================================
+
+    ocr_result = reader.readtext(
+        upload_path
+    )
+
+    ocr_text = []
 
     expiry_date = "Not Found"
     batch_number = "Not Found"
@@ -231,31 +378,38 @@ async def analyze(
     expiry_crop_url = None
     batch_crop_url = None
 
-    # -------------------------
-    # Process OCR detections
-    # -------------------------
 
-    for detection in result:
+    # =====================================================
+    # 3. PROCESS OCR
+    # =====================================================
 
-        bbox, text, confidence = detection
+    for detection in ocr_result:
+
+        bbox, text, ocr_confidence = detection
 
         text_clean = text.strip()
 
         if not text_clean:
             continue
 
-        texts.append(text_clean)
+        ocr_text.append(
+            text_clean
+        )
 
-        # =====================
+
+        # -------------------------------------------------
         # EXPIRY
-        # =====================
+        # -------------------------------------------------
 
-        if expiry_date == "Not Found" and is_expiry(text_clean):
+        if (
+            expiry_date == "Not Found"
+            and is_expiry(text_clean)
+        ):
 
             expiry_date = text_clean
 
             crop_file, coordinates = save_crop(
-                image,
+                image_data,
                 bbox,
                 "expiry"
             )
@@ -270,7 +424,7 @@ async def analyze(
                 x1, y1, x2, y2 = coordinates
 
                 cv2.rectangle(
-                    image,
+                    image_data,
                     (x1, y1),
                     (x2, y2),
                     (0, 255, 0),
@@ -278,7 +432,7 @@ async def analyze(
                 )
 
                 cv2.putText(
-                    image,
+                    image_data,
                     "EXPIRY",
                     (x1, max(25, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
@@ -287,16 +441,20 @@ async def analyze(
                     2
                 )
 
-        # =====================
-        # BATCH
-        # =====================
 
-        if batch_number == "Not Found" and is_batch(text_clean):
+        # -------------------------------------------------
+        # BATCH
+        # -------------------------------------------------
+
+        if (
+            batch_number == "Not Found"
+            and is_batch(text_clean)
+        ):
 
             batch_number = text_clean
 
             crop_file, coordinates = save_crop(
-                image,
+                image_data,
                 bbox,
                 "batch"
             )
@@ -311,7 +469,7 @@ async def analyze(
                 x1, y1, x2, y2 = coordinates
 
                 cv2.rectangle(
-                    image,
+                    image_data,
                     (x1, y1),
                     (x2, y2),
                     (255, 0, 0),
@@ -319,7 +477,7 @@ async def analyze(
                 )
 
                 cv2.putText(
-                    image,
+                    image_data,
                     "BATCH",
                     (x1, max(25, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
@@ -328,11 +486,14 @@ async def analyze(
                     2
                 )
 
-    # -------------------------
-    # Save highlighted image
-    # -------------------------
 
-    result_file = f"{uuid.uuid4().hex}.jpg"
+    # =====================================================
+    # 4. SAVE HIGHLIGHTED IMAGE
+    # =====================================================
+
+    result_file = (
+        f"{uuid.uuid4().hex}.jpg"
+    )
 
     result_path = os.path.join(
         RESULT_DIR,
@@ -341,33 +502,36 @@ async def analyze(
 
     cv2.imwrite(
         result_path,
-        image
+        image_data
     )
 
-    base_url = str(
-        request.base_url
-    ).rstrip("/")
+    base_url = (
+        str(request.base_url)
+        .rstrip("/")
+    )
 
-    # -------------------------
-    # Response
-    # -------------------------
+
+    # =====================================================
+    # 5. RETURN REAL RESULT
+    # =====================================================
 
     return {
+
         "expiry_date": expiry_date,
+
         "batch_number": batch_number,
-        "ocr_text": texts,
 
-        # Existing fields
-        "tampering_status": "Safe",
-        "confidence": 98,
+        "ocr_text": ocr_text,
 
-        # Highlighted image
+        "tampering_status": tampering_status,
+
+        "confidence": confidence,
+
         "highlighted_image": (
             f"{base_url}/results/{result_file}"
         ),
 
-        # Crops
         "cropped_expiry": expiry_crop_url,
+
         "cropped_batch": batch_crop_url
     }
-
