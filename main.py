@@ -9,23 +9,17 @@ import re
 import cv2
 import uuid
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.preprocessing import image
 
 
 # =========================================================
 # SETTINGS
 # =========================================================
 
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 RESULT_DIR = os.path.join(BASE_DIR, "results")
 CROP_DIR = os.path.join(BASE_DIR, "cropped")
-
-MODEL_PATH = os.path.join(BASE_DIR, "model.keras")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -41,11 +35,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-
-# =========================================================
-# CORS
-# =========================================================
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -53,11 +42,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# =========================================================
-# STATIC FILES
-# =========================================================
 
 app.mount(
     "/results",
@@ -73,19 +57,6 @@ app.mount(
 
 
 # =========================================================
-# LOAD TRAINED TAMPERING MODEL
-# =========================================================
-
-print("Loading tampering detection model...")
-
-tampering_model = tf.keras.models.load_model(
-    MODEL_PATH
-)
-
-print("Tampering model loaded successfully.")
-
-
-# =========================================================
 # LOAD OCR
 # =========================================================
 
@@ -93,7 +64,7 @@ print("Loading EasyOCR...")
 
 reader = easyocr.Reader(
     ["en"],
-    gpu=False,tampering_model=tampering_model_
+    gpu=False,
     model_storage_directory="/tmp"
 )
 
@@ -101,41 +72,234 @@ print("EasyOCR loaded successfully.")
 
 
 # =========================================================
+# IMAGE PREPROCESSING
+# =========================================================
+
+def preprocess_for_ocr(image_data):
+
+    gray = cv2.cvtColor(
+        image_data,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    h, w = gray.shape
+
+    # Upscale smaller images
+    longest_side = max(h, w)
+
+    if longest_side < 1600:
+
+        scale = 1600 / longest_side
+
+        gray = cv2.resize(
+            gray,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+    # Reduce noise
+    gray = cv2.GaussianBlur(
+        gray,
+        (3, 3),
+        0
+    )
+
+    # Improve contrast
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    )
+
+    enhanced = clahe.apply(gray)
+
+    return enhanced
+
+
+# =========================================================
+# IMAGE QUALITY
+# =========================================================
+
+def check_image_quality(image_data):
+
+    gray = cv2.cvtColor(
+        image_data,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    blur_score = float(
+        cv2.Laplacian(
+            gray,
+            cv2.CV_64F
+        ).var()
+    )
+
+    brightness = float(
+        np.mean(gray)
+    )
+
+    if blur_score < 25:
+        blur_status = "Too blurry"
+
+    elif blur_score < 80:
+        blur_status = "Slightly blurry"
+
+    else:
+        blur_status = "Clear"
+
+    if brightness < 45:
+        lighting_status = "Too dark"
+
+    elif brightness > 220:
+        lighting_status = "Too bright"
+
+    else:
+        lighting_status = "Good lighting"
+
+    quality_score = 100.0
+
+    if blur_score < 25:
+        quality_score -= 50
+
+    elif blur_score < 80:
+        quality_score -= 20
+
+    if brightness < 45 or brightness > 220:
+        quality_score -= 25
+
+    quality_score = max(
+        0.0,
+        min(100.0, quality_score)
+    )
+
+    return {
+        "score": round(
+            quality_score,
+            2
+        ),
+
+        "blur_score": round(
+            blur_score,
+            2
+        ),
+
+        "brightness": round(
+            brightness,
+            2
+        ),
+
+        "blur_status": blur_status,
+
+        "lighting_status": lighting_status
+    }
+
+
+# =========================================================
 # EXPIRY DETECTION
 # =========================================================
 
-def is_expiry(text):
+def normalize_ocr_text(text):
 
-    text_clean = text.strip().upper()
+    text = text.upper().strip()
 
-    expiry_keywords = [
-        "EXP",
-        "EXPIRY",
-        "EXP DATE",
-        "EXPIRY DATE",
-        "USE BY",
-        "BEST BEFORE",
-        "BBE"
-    ]
+    replacements = {
+        "EXPIRYDATE": "EXPIRY DATE",
+        "EXPDATE": "EXP DATE",
+        "BESTBEFORE": "BEST BEFORE",
+        "USEBY": "USE BY"
+    }
 
-    for keyword in expiry_keywords:
-        if keyword in text_clean:
-            return True
+    for old, new in replacements.items():
 
-    date_patterns = [
+        text = text.replace(
+            old,
+            new
+        )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+
+def extract_expiry_date(text):
+
+    text_clean = normalize_ocr_text(
+        text
+    )
+
+    patterns = [
+
         r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+
         r"\b\d{1,2}[/-]\d{4}\b",
+
         r"\b\d{1,2}[/-]\d{2}\b",
-        r"\b\d{1,2}\s?[A-Za-z]{3,9}\s?\d{2,4}\b",
-        r"\b[A-Za-z]{3,9}\s?\d{2,4}\b",
+
+        r"\b\d{1,2}\s?[A-Z]{3,9}\s?\d{2,4}\b",
+
+        r"\b[A-Z]{3,9}\s?\d{2,4}\b",
+
         r"\b\d{4}[/-]\d{1,2}\b"
     ]
 
-    for pattern in date_patterns:
-        if re.search(pattern, text_clean):
-            return True
+    for pattern in patterns:
 
-    return False
+        match = re.search(
+            pattern,
+            text_clean
+        )
+
+        if match:
+
+            return match.group(0)
+
+    return None
+
+
+def expiry_score(text):
+
+    clean = normalize_ocr_text(
+        text
+    )
+
+    keywords = [
+
+        "EXPIRY DATE",
+
+        "EXP DATE",
+
+        "EXPIRY",
+
+        "BEST BEFORE",
+
+        "USE BY",
+
+        "EXP",
+
+        "BBE"
+    ]
+
+    score = 0
+
+    for keyword in keywords:
+
+        if keyword in clean:
+
+            score += 3
+
+    if extract_expiry_date(clean):
+
+        score += 4
+
+    return score
+
+
+def is_expiry(text):
+
+    return expiry_score(text) >= 3
 
 
 # =========================================================
@@ -147,55 +311,101 @@ def is_batch(text):
     text_clean = text.strip().upper()
 
     batch_keywords = [
+
         "BATCH",
+
         "BATCH NO",
+
         "BATCH NUMBER",
+
         "LOT",
+
         "LOT NO",
+
         "LOT NUMBER",
+
         "B.NO",
+
         "B NO",
+
         "MFG BATCH"
     ]
 
     for keyword in batch_keywords:
+
         if keyword in text_clean:
+
             return True
 
     batch_patterns = [
+
         r"\bB[0-9A-Z]{3,}\b",
+
         r"\bLOT[ -]?[0-9A-Z]{2,}\b",
+
         r"\b[A-Z]{1,4}[ -]?[0-9]{3,8}\b"
     ]
 
     for pattern in batch_patterns:
-        if re.search(pattern, text_clean):
+
+        if re.search(
+            pattern,
+            text_clean
+        ):
+
             return True
 
     return False
 
 
 # =========================================================
-# SAVE OCR CROP
+# SAVE CROP
 # =========================================================
 
-def save_crop(image_data, bbox, prefix):
+def save_crop(
+    image_data,
+    bbox,
+    prefix
+):
 
     points = [
+
         (int(x), int(y))
+
         for x, y in bbox
     ]
 
-    x1 = min(p[0] for p in points)
-    y1 = min(p[1] for p in points)
+    x1 = min(
+        p[0]
+        for p in points
+    )
 
-    x2 = max(p[0] for p in points)
-    y2 = max(p[1] for p in points)
+    y1 = min(
+        p[1]
+        for p in points
+    )
+
+    x2 = max(
+        p[0]
+        for p in points
+    )
+
+    y2 = max(
+        p[1]
+        for p in points
+    )
 
     margin = 25
 
-    cx1 = max(0, x1 - margin)
-    cy1 = max(0, y1 - margin)
+    cx1 = max(
+        0,
+        x1 - margin
+    )
+
+    cy1 = max(
+        0,
+        y1 - margin
+    )
 
     cx2 = min(
         image_data.shape[1],
@@ -213,6 +423,7 @@ def save_crop(image_data, bbox, prefix):
     ]
 
     if crop.size == 0:
+
         return None, None
 
     filename = (
@@ -229,60 +440,63 @@ def save_crop(image_data, bbox, prefix):
         crop
     )
 
-    return filename, (x1, y1, x2, y2)
+    return (
+        filename,
+        (x1, y1, x2, y2)
+    )
 
 
 # =========================================================
-# TAMPERING PREDICTION
+# ANALYSIS
 # =========================================================
 
-def predict_tampering(image_path):
+def analyze_image(
+    ocr_result,
+    quality
+):
 
-    IMG_SIZE = (224, 224)
+    confidences = [
 
-    # Same preprocessing used in predict.py
-    img = image.load_img(
-        image_path,
-        target_size=IMG_SIZE
+        float(item[2])
+
+        for item in ocr_result
+
+        if len(item) == 3
+    ]
+
+    avg_ocr = (
+
+        sum(confidences)
+        / len(confidences)
+
+        if confidences
+
+        else 0.0
     )
 
-    img_array = image.img_to_array(img)
-
-    img_array = np.expand_dims(
-        img_array,
-        axis=0
+    confidence = round(
+        avg_ocr * 100,
+        2
     )
 
-    img_array = img_array / 255.0
+    if not ocr_result:
 
-    prediction = tampering_model.predict(
-        img_array,
-        verbose=0
-    )
-
-    # Your predict.py uses class 0
-    # as the tampered probability.
-    tampered_probability = float(
-        prediction[0][0]
-    )
-
-    if tampered_probability > 0.5:
-
-        result = "TAMPERED"
-
-        confidence = (
-            tampered_probability * 100
+        return (
+            "UNABLE TO ANALYZE",
+            confidence
         )
 
-    else:
+    if quality["score"] < 30:
 
-        result = "ORIGINAL"
-
-        confidence = (
-            (1 - tampered_probability) * 100
+        return (
+            "LOW IMAGE QUALITY",
+            confidence
         )
 
-    return result, round(confidence, 2)
+    return (
+        "ANALYZED",
+        confidence
+    )
 
 
 # =========================================================
@@ -293,9 +507,32 @@ def predict_tampering(image_path):
 def home():
 
     return {
-        "message": "PackInspect AI Backend Running",
-        "model": "Loaded",
-        "status": "Ready"
+
+        "message":
+            "PackInspect AI Backend Running",
+
+        "analysis":
+            "OpenCV + EasyOCR",
+
+        "status":
+            "Ready"
+    }
+
+
+# =========================================================
+# HEALTH
+# =========================================================
+
+@app.get("/health")
+def health():
+
+    return {
+
+        "status":
+            "healthy",
+
+        "ocr":
+            "loaded"
     }
 
 
@@ -305,7 +542,9 @@ def home():
 
 @app.post("/analyze")
 async def analyze(
+
     request: Request,
+
     file: UploadFile = File(...)
 ):
 
@@ -314,15 +553,20 @@ async def analyze(
     # -----------------------------------------------------
 
     safe_filename = (
+
         file.filename
+
         or "uploaded_image.jpg"
     )
 
     upload_name = (
-        f"{uuid.uuid4().hex}_{safe_filename}"
+
+        f"{uuid.uuid4().hex}_"
+        f"{safe_filename}"
     )
 
     upload_path = os.path.join(
+
         UPLOAD_DIR,
         upload_name
     )
@@ -349,38 +593,68 @@ async def analyze(
     if image_data is None:
 
         return {
-            "error": "Unable to read uploaded image"
+
+            "success": False,
+
+            "error":
+                "Unable to read uploaded image"
         }
 
 
-    # =====================================================
-    # 1. ACTUAL TRAINED MODEL PREDICTION
-    # =====================================================
+    # -----------------------------------------------------
+    # IMAGE QUALITY
+    # -----------------------------------------------------
 
-    tampering_status, confidence = (
-        predict_tampering(upload_path)
+    quality = check_image_quality(
+        image_data
     )
 
 
-    # =====================================================
-    # 2. OCR
-    # =====================================================
+    # -----------------------------------------------------
+    # PREPROCESS
+    # -----------------------------------------------------
+
+    processed_image = preprocess_for_ocr(
+        image_data
+    )
+
+
+    # -----------------------------------------------------
+    # OCR
+    # -----------------------------------------------------
 
     ocr_result = reader.readtext(
-        upload_path
+        processed_image
     )
+
+
+    # -----------------------------------------------------
+    # ANALYSIS
+    # -----------------------------------------------------
+
+    tampering_status, confidence = (
+        analyze_image(
+            ocr_result,
+            quality
+        )
+    )
+
 
     ocr_text = []
 
+    ocr_confidences = []
+
     expiry_date = "Not Found"
+
     batch_number = "Not Found"
 
     expiry_crop_url = None
+
     batch_crop_url = None
 
 
     # =====================================================
-    # 3. PROCESS OCR
+    # PROCESS OCR
     # =====================================================
 
     for detection in ocr_result:
@@ -390,10 +664,19 @@ async def analyze(
         text_clean = text.strip()
 
         if not text_clean:
+
             continue
 
         ocr_text.append(
             text_clean
+        )
+
+        ocr_confidences.append(
+
+            round(
+                float(ocr_confidence) * 100,
+                2
+            )
         )
 
 
@@ -401,43 +684,82 @@ async def analyze(
         # EXPIRY
         # -------------------------------------------------
 
+        detected_expiry_date = (
+            extract_expiry_date(
+                text_clean
+            )
+        )
+
         if (
+
             expiry_date == "Not Found"
-            and is_expiry(text_clean)
+
+            and expiry_score(
+                text_clean
+            ) >= 3
         ):
 
-            expiry_date = text_clean
+            expiry_date = (
 
-            crop_file, coordinates = save_crop(
-                image_data,
-                bbox,
-                "expiry"
+                detected_expiry_date
+
+                if detected_expiry_date
+
+                else text_clean
+            )
+
+            crop_file, coordinates = (
+                save_crop(
+                    image_data,
+                    bbox,
+                    "expiry"
+                )
             )
 
             if crop_file:
 
                 expiry_crop_url = (
+
                     f"{str(request.base_url).rstrip('/')}"
+
                     f"/cropped/{crop_file}"
                 )
 
                 x1, y1, x2, y2 = coordinates
 
                 cv2.rectangle(
+
                     image_data,
+
                     (x1, y1),
+
                     (x2, y2),
+
                     (0, 255, 0),
+
                     3
                 )
 
                 cv2.putText(
+
                     image_data,
+
                     "EXPIRY",
-                    (x1, max(25, y1 - 10)),
+
+                    (
+                        x1,
+                        max(
+                            25,
+                            y1 - 10
+                        )
+                    ),
+
                     cv2.FONT_HERSHEY_SIMPLEX,
+
                     0.8,
+
                     (0, 255, 0),
+
                     2
                 )
 
@@ -447,48 +769,74 @@ async def analyze(
         # -------------------------------------------------
 
         if (
+
             batch_number == "Not Found"
-            and is_batch(text_clean)
+
+            and is_batch(
+                text_clean
+            )
         ):
 
             batch_number = text_clean
 
-            crop_file, coordinates = save_crop(
-                image_data,
-                bbox,
-                "batch"
+            crop_file, coordinates = (
+                save_crop(
+                    image_data,
+                    bbox,
+                    "batch"
+                )
             )
 
             if crop_file:
 
                 batch_crop_url = (
+
                     f"{str(request.base_url).rstrip('/')}"
+
                     f"/cropped/{crop_file}"
                 )
 
                 x1, y1, x2, y2 = coordinates
 
                 cv2.rectangle(
+
                     image_data,
+
                     (x1, y1),
+
                     (x2, y2),
+
                     (255, 0, 0),
+
                     3
                 )
 
                 cv2.putText(
+
                     image_data,
+
                     "BATCH",
-                    (x1, max(25, y1 - 10)),
+
+                    (
+                        x1,
+                        max(
+                            25,
+                            y1 - 10
+                        )
+                    ),
+
                     cv2.FONT_HERSHEY_SIMPLEX,
+
                     0.8,
+
                     (255, 0, 0),
+
                     2
                 )
 
 
     # =====================================================
-    # 4. SAVE HIGHLIGHTED IMAGE
+    # SAVE HIGHLIGHTED IMAGE
     # =====================================================
 
     result_file = (
@@ -496,6 +844,7 @@ async def analyze(
     )
 
     result_path = os.path.join(
+
         RESULT_DIR,
         result_file
     )
@@ -511,27 +860,83 @@ async def analyze(
     )
 
 
+    average_ocr_confidence = (
+
+        round(
+            sum(ocr_confidences)
+            / len(ocr_confidences),
+            2
+        )
+
+        if ocr_confidences
+
+        else 0.0
+    )
+
+
     # =====================================================
-    # 5. RETURN REAL RESULT
+    # RESPONSE
     # =====================================================
 
     return {
 
-        "expiry_date": expiry_date,
+        "success": True,
 
-        "batch_number": batch_number,
+        "expiry_date":
+            expiry_date,
 
-        "ocr_text": ocr_text,
+        "batch_number":
+            batch_number,
 
-        "tampering_status": tampering_status,
+        "ocr_text":
+            ocr_text,
 
-        "confidence": confidence,
+        "ocr_confidences":
+            ocr_confidences,
 
-        "highlighted_image": (
-            f"{base_url}/results/{result_file}"
-        ),
+        "ocr_average_confidence":
+            average_ocr_confidence,
 
-        "cropped_expiry": expiry_crop_url,
+        "image_quality":
+            quality,
 
-        "cropped_batch": batch_crop_url
+        "tampering_status":
+            tampering_status,
+
+        "confidence":
+            confidence,
+
+        "highlighted_image":
+            f"{base_url}/results/{result_file}",
+
+        "cropped_expiry":
+            expiry_crop_url,
+
+        "cropped_batch":
+            batch_crop_url
     }
+
+
+# =========================================================
+# RUN
+# =========================================================
+
+if __name__ == "__main__":
+
+    import uvicorn
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            8000
+        )
+    )
+
+    uvicorn.run(
+
+        app,
+
+        host="0.0.0.0",
+
+        port=port
+    )
