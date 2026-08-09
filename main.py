@@ -93,7 +93,7 @@ print("Loading EasyOCR...")
 
 reader = easyocr.Reader(
     ["en"],
-    gpu=False,
+    gpu=False,tampering_model=tampering_model_
     model_storage_directory="/tmp"
 )
 
