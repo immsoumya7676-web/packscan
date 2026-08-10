@@ -21,12 +21,29 @@ import numpy as np
 # SETTINGS
 # =========================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "model.keras")
+
+MODEL_URL = "https://media.githubusercontent.com/media/immsoumya7676-web/packscan/main/model.keras"
+
+if not os.path.exists(MODEL_PATH):
+    print("model.keras not found. Downloading from GitHub...")
+
+    import urllib.request
+
+    urllib.request.urlretrieve(
+        MODEL_URL,
+        MODEL_PATH
+    )
+
+    print("model.keras downloaded successfully.")
 
 print("Loading tampering detection model...")
 
 model = tf.keras.models.load_model(MODEL_PATH)
+
+print("Tampering detection model loaded successfully.")
+
+
 
 print("Tampering detection model loaded successfully.")
 
