@@ -39,7 +39,7 @@ if not os.path.exists(MODEL_PATH):
 model = None
 reader = None
 
-def get_model()
+def get_model():
 global model
 
 ```
