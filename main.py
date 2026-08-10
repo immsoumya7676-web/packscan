@@ -15,6 +15,7 @@ import re
 import cv2
 import uuid
 import numpy as np
+import urllib.request
 
 
 # =========================================================
@@ -23,30 +24,38 @@ import numpy as np
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATH = os.path.join(BASE_DIR, "model.keras")
-
 MODEL_URL = "https://media.githubusercontent.com/media/immsoumya7676-web/packscan/main/model.keras"
 
-if not os.path.exists(MODEL_PATH):
-    print("model.keras not found. Downloading from GitHub...")
+# Ensure model exists at startup
+def ensure_model():
+    """Download model if missing or if it's a Git LFS pointer (< 1KB)"""
+    if not os.path.exists(MODEL_PATH):
+        print(f"[MODEL] Not found at {MODEL_PATH}. Downloading from {MODEL_URL}...")
+        try:
+            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+            print(f"[MODEL] Downloaded successfully ({os.path.getsize(MODEL_PATH)} bytes)")
+        except Exception as e:
+            raise RuntimeError(f"Failed to download model: {e}")
+    else:
+        size = os.path.getsize(MODEL_PATH)
+        if size < 1024:  # Git LFS pointer is ~130 bytes
+            print(f"[MODEL] File exists but is only {size} bytes (likely Git LFS pointer). Re-downloading...")
+            try:
+                urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+                print(f"[MODEL] Downloaded successfully ({os.path.getsize(MODEL_PATH)} bytes)")
+            except Exception as e:
+                raise RuntimeError(f"Failed to download model: {e}")
+        else:
+            print(f"[MODEL] Found at {MODEL_PATH} ({size} bytes)")
 
-    import urllib.request
+ensure_model()
 
-    urllib.request.urlretrieve(
-        MODEL_URL,
-        MODEL_PATH
-    )
-
-    print("model.keras downloaded successfully.")
-
-print("Loading tampering detection model...")
-
-model = tf.keras.models.load_model(MODEL_PATH)
-
-print("Tampering detection model loaded successfully.")
-
-
-
-print("Tampering detection model loaded successfully.")
+print("[STARTUP] Loading tampering detection model...")
+try:
+    model = tf.keras.models.load_model(MODEL_PATH)
+    print("[STARTUP] Tampering detection model loaded successfully.")
+except Exception as e:
+    raise RuntimeError(f"Failed to load model from {MODEL_PATH}: {e}")
 
 IMG_SIZE = (224, 224)
 
@@ -93,7 +102,7 @@ app.mount(
 # LOAD OCR
 # =========================================================
 
-print("Loading EasyOCR...")
+print("[STARTUP] Loading EasyOCR...")
 
 reader = easyocr.Reader(
     ["en"],
@@ -101,7 +110,7 @@ reader = easyocr.Reader(
     model_storage_directory="/tmp"
 )
 
-print("EasyOCR loaded successfully.")
+print("[STARTUP] EasyOCR loaded successfully.")
 
 
 # =========================================================
@@ -913,23 +922,11 @@ async def analyze(
         image_data
     )
 
-    base_url = (
-        str(request.base_url)
-        .rstrip("/")
-    )
+    result_url = (
 
+        f"{str(request.base_url).rstrip('/')}"
 
-    average_ocr_confidence = (
-
-        round(
-            sum(ocr_confidences)
-            / len(ocr_confidences),
-            2
-        )
-
-        if ocr_confidences
-
-        else 0.0
+        f"/results/{result_file}"
     )
 
 
@@ -941,64 +938,48 @@ async def analyze(
 
         "success": True,
 
-        "expiry_date":
-            expiry_date,
+        "tampering": {
 
-        "batch_number":
-            batch_number,
+            "status": tampering_status,
 
-        "ocr_text":
-            ocr_text,
+            "confidence": confidence,
 
-        "ocr_confidences":
-            ocr_confidences,
+            "model_score": model_score
+        },
 
-        "ocr_average_confidence":
-            average_ocr_confidence,
+        "ocr": {
 
-        "image_quality":
-            quality,
+            "detected_text": ocr_text,
 
-        "tampering_status":
-            tampering_status,
+            "confidences": ocr_confidences,
 
-        "confidence":
-            confidence,
+            "overall_confidence": round(
+                sum(ocr_confidences) / len(ocr_confidences),
+                2
+            ) if ocr_confidences else 0.0
 
-        "model_score":
-             model_score,
+        },
 
-        "highlighted_image":
-            f"{base_url}/results/{result_file}",
+        "expiry": {
 
-        "cropped_expiry":
-            expiry_crop_url,
+            "date": expiry_date,
 
-        "cropped_batch":
-            batch_crop_url
+            "crop_url": expiry_crop_url
+
+        },
+
+        "batch": {
+
+            "number": batch_number,
+
+            "crop_url": batch_crop_url
+
+        },
+
+        "image_quality": quality,
+
+        "analysis_status": analyze_image(ocr_result, quality),
+
+        "result_image_url": result_url
     }
 
-
-# =========================================================
-# RUN
-# =========================================================
-
-if __name__ == "__main__":
-
-    import uvicorn
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            8000
-        )
-    )
-
-    uvicorn.run(
-
-        app,
-
-        host="0.0.0.0",
-
-        port=port
-    )
