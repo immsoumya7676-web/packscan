@@ -7,8 +7,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-import tensorflow as tf
-import easyocr
+
 import shutil
 import os
 import re
@@ -37,16 +36,47 @@ if not os.path.exists(MODEL_PATH):
     )
 
     print("model.keras downloaded successfully.")
+model = None
+reader = None
 
-print("Loading tampering detection model...")
+def get_model()
+global model
 
-model = tf.keras.models.load_model(MODEL_PATH)
+```
+if model is None:
+    print("Loading tampering detection model...")
+    import tensorflow as tf
 
-print("Tampering detection model loaded successfully.")
+    model = tf.keras.models.load_model(
+        MODEL_PATH    )
 
+    print(
+        "Tampering detection model loaded successfully."
+    )
 
+return model
+```
 
-print("Tampering detection model loaded successfully.")
+def get_reader():
+global reader
+
+```
+if reader is None:
+    print("Loading EasyOCR...")
+
+    import easyocr
+
+    reader = easyocr.Reader(
+        ["en"],
+        gpu=False,
+        model_storage_directory="/tmp"
+    )
+
+    print("EasyOCR loaded successfully.")
+
+return reader
+```
+
 
 IMG_SIZE = (224, 224)
 
@@ -89,19 +119,6 @@ app.mount(
 )
 
 
-# =========================================================
-# LOAD OCR
-# =========================================================
-
-print("Loading EasyOCR...")
-
-reader = easyocr.Reader(
-    ["en"],
-    gpu=False,
-    model_storage_directory="/tmp"
-)
-
-print("EasyOCR loaded successfully.")
 
 
 # =========================================================
@@ -493,7 +510,7 @@ def predict_tampering(image_data):
     img_array = rgb.astype(np.float32) / 255.0
     img_array = np.expand_dims(img_array, axis=0)
 
-    prediction = model.predict(img_array, verbose=0)
+    prediction = get_model().predict(img_array, verbose=0)
 
     score = float(prediction[0][0])
 
@@ -685,9 +702,9 @@ async def analyze(
     # OCR
     # -----------------------------------------------------
 
-    ocr_result = reader.readtext(
-        processed_image
-    )
+    ocr_result = get_reader().readtext(
+    processed_image
+)
 
 
     # -----------------------------------------------------
