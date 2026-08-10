@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import tensorflow as tf
 import easyocr
 import shutil
 import os
@@ -16,6 +17,15 @@ import numpy as np
 # =========================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model.keras")
+
+print("Loading tampering detection model...")
+
+model = tf.keras.models.load_model(MODEL_PATH)
+
+print("Tampering detection model loaded successfully.")
+
+IMG_SIZE = (224, 224)
 
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 RESULT_DIR = os.path.join(BASE_DIR, "results")
@@ -450,6 +460,35 @@ def save_crop(
 # ANALYSIS
 # =========================================================
 
+def predict_tampering(image_data):
+    resized = cv2.resize(image_data, IMG_SIZE)
+
+    # Convert OpenCV BGR → RGB
+    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+
+    # Same normalization used in predict.py
+    img_array = rgb.astype(np.float32) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+
+    prediction = model.predict(img_array, verbose=0)
+
+    score = float(prediction[0][0])
+
+    if score >= 0.65:
+        status = "SUSPICIOUS"
+        confidence = score * 100
+
+    elif score <= 0.35:
+        status = "SAFE"
+        confidence = (1.0 - score) * 100
+
+    else:
+        status = "NEEDS REVIEW"
+        confidence = max(score, 1.0 - score) * 100
+
+    return status, round(confidence, 2), round(score, 4)
+
+
 def analyze_image(
     ocr_result,
     quality
@@ -632,12 +671,9 @@ async def analyze(
     # ANALYSIS
     # -----------------------------------------------------
 
-    tampering_status, confidence = (
-        analyze_image(
-            ocr_result,
-            quality
-        )
-    )
+    tampering_status, confidence, model_score = predict_tampering(
+    image_data
+)
 
 
     ocr_text = []
@@ -905,6 +941,9 @@ async def analyze(
 
         "confidence":
             confidence,
+
+        "model_score":
+             model_score,
 
         "highlighted_image":
             f"{base_url}/results/{result_file}",
